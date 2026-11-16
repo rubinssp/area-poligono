@@ -111,8 +111,19 @@ details summary{cursor:pointer;color:var(--verde);font-weight:600;padding:4px 0}
   </div>
 </section>
 
+<section id="secAlin" style="display:none">
+  <h2>4. Alinhar pontos intermediários numa reta</h2>
+  <p class="muted">Escolha o início e o fim de uma divisa que deve ser reta (ex.: Pt12 e Pt15). Os pontos que ficam entre eles no polígono (ex.: Pt13, Pt14) são levados para cima da reta, na perpendicular.</p>
+  <div class="row">
+    <div style="flex:1 1 140px"><label>Início da reta</label><select id="alIni"></select></div>
+    <div style="flex:1 1 140px"><label>Fim da reta</label><select id="alFim"></select></div>
+  </div>
+  <div class="row" style="margin-top:8px"><button id="btnAlin">Propor alinhamento</button><button class="sec" id="btnDesfazAlin" style="display:none">Desfazer alinhamentos</button></div>
+  <div id="alRes"></div>
+</section>
+
 <section id="secAlvo" style="display:none">
-  <h2>4. Ajustar para uma área desejada</h2>
+  <h2>5. Ajustar para uma área desejada</h2>
   <p class="muted">Calcula quanto deslocar um lado para chegar na área combinada, e as coordenadas dos novos vértices para implantar em campo.</p>
   <div class="row">
     <div style="flex:1 1 140px"><label>Área desejada (ha)</label><input id="aAlvo" inputmode="decimal" placeholder="25,9"></div>
@@ -247,7 +258,7 @@ function aplicarLeitura(txt, origem){
   usarPontos(pts, origem, info);
 }
 function usarPontos(pts, origem, info){
-  PTS = pts.map(p=>({nome:p.nome, E:p.E, N:p.N, h:isFinite(p.h)?p.h:NaN, usar:p.usar!==false})); salvar();
+  PTS = pts.map(p=>({nome:p.nome, E:p.E, N:p.N, h:isFinite(p.h)?p.h:NaN, usar:p.usar!==false})); salvar(); $('alRes').innerHTML='';
   $('msgArq').innerHTML=`<div class="ok">${pts.length} pontos lidos de ${origem} — ${info}.</div>`;
   render();
 }
@@ -391,7 +402,7 @@ function render(){
   const tb=$('tabPts').querySelector('tbody'); tb.innerHTML='';
   PTS.forEach((p,i)=>{
     const tr=document.createElement('tr'); if(!p.usar) tr.className='off';
-    tr.innerHTML=`<td><input type="checkbox" ${p.usar?'checked':''} style="width:22px;height:22px;min-height:0"></td><td>${p.nome}</td><td>${br(p.E,3)}</td><td>${br(p.N,3)}</td><td class="ord"><button class="sec">▲</button><button class="sec">▼</button></td>`;
+    tr.innerHTML=`<td><input type="checkbox" ${p.usar?'checked':''} style="width:22px;height:22px;min-height:0"></td><td>${p.nome}${p.orig?' <span title="alinhado" style="color:#ef6c00">✎</span>':''}</td><td>${br(p.E,3)}</td><td>${br(p.N,3)}</td><td class="ord"><button class="sec">▲</button><button class="sec">▼</button></td>`;
     tr.querySelector('input').onchange=e=>{p.usar=e.target.checked; salvar(); render();};
     const [up,dn]=tr.querySelectorAll('td.ord button');
     up.onclick=()=>{ if(i>0){[PTS[i-1],PTS[i]]=[PTS[i],PTS[i-1]]; salvar(); render();} };
@@ -404,7 +415,7 @@ function render(){
 function calcular(){
   const r=PTS.filter(p=>p.usar);
   const ok=r.length>=3;
-  $('secRes').style.display=ok?'block':'none'; $('secAlvo').style.display=ok?'block':'none';
+  $('secRes').style.display=ok?'block':'none'; $('secAlvo').style.display=ok?'block':'none'; $('secAlin').style.display=ok?'block':'none';
   if(!ok){ RES=null; return; }
   const A=area(r), P=perim(r);
   RES={r, A:Math.abs(A), P, horario:A<0};
@@ -418,6 +429,8 @@ function calcular(){
   r.forEach((p,i)=>{ const q=r[(i+1)%r.length]; sel.insertAdjacentHTML('beforeend',`<option value="${i}">${p.nome} – ${q.nome} (${br(dist(p,q),1)} m)</option>`); });
   if(ant && +ant<r.length) sel.value=ant;
   atualizaOpcoes();
+  ['alIni','alFim'].forEach((id,q)=>{ const el=$(id), ant=el.value; el.innerHTML=r.map((p,k)=>`<option value="${p.nome}">${p.nome}</option>`).join(''); el.value = (ant && r.some(p=>p.nome===ant)) ? ant : r[q===0?0:Math.min(2,r.length-1)].nome; });
+  $('btnDesfazAlin').style.display = PTS.some(p=>p.orig) ? 'inline-block' : 'none';
   const pj=$('aProj'); const marc=new Set([...pj.querySelectorAll('input:checked')].map(x=>x.value)); pj.innerHTML='';
   PTS.forEach(p=>{ pj.insertAdjacentHTML('beforeend',`<label style="flex:0 0 auto;display:flex;gap:4px;align-items:center;margin:0;padding:6px 8px;border:1px solid var(--borda);border-radius:16px"><input type="checkbox" value="${p.nome}" ${marc.has(p.nome)?'checked':''} style="width:18px;height:18px;min-height:0">${p.nome}</label>`); });
 }
@@ -530,7 +543,36 @@ function copiar(t){ (navigator.clipboard&&navigator.clipboard.writeText?navigato
 function baixar(nome, txt){ try{ const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob(['﻿'+txt],{type:'text/csv'})); a.download=nome; document.body.appendChild(a); a.click(); setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},500); toast('Arquivo salvo em Downloads'); }catch(e){ copiar(txt); } }
 function textoResultado(){ if(!RES) return ''; return `Área: ${br(RES.A,2)} m² (${br(RES.A/1e4,4)} ha)\nPerímetro: ${br(RES.P,2)} m\nVértices (${RES.r.length}): ${RES.r.map(p=>p.nome).join(' - ')}`; }
 $('btnCopiar').onclick=()=>copiar(textoResultado());
-$('btnBaixar').onclick=()=>{ if(!RES) return; baixar('poligono_area.csv','Ponto;E;N\n'+RES.r.map(p=>`${p.nome};${p.E.toFixed(3)};${p.N.toFixed(3)}`).join('\n')+`\n\nArea (m2);${RES.A.toFixed(2)}\nArea (ha);${(RES.A/1e4).toFixed(4)}\nPerimetro (m);${RES.P.toFixed(2)}`); };
+
+// ---------------- alinhamento de pontos intermediários ----------------
+function alinhar(){
+  if(!RES) return; const r=RES.r, n=r.length;
+  const i=r.findIndex(p=>p.nome===$('alIni').value), j=r.findIndex(p=>p.nome===$('alFim').value);
+  if(i<0||j<0||i===j){ $('alRes').innerHTML='<div class="aviso">Escolha dois vértices diferentes.</div>'; return; }
+  // pega o caminho mais curto entre os dois pontos (a ordem início/fim não importa)
+  const ida=[]; for(let k=(i+1)%n;k!==j;k=(k+1)%n) ida.push(k);
+  const volta=[]; for(let k=(j+1)%n;k!==i;k=(k+1)%n) volta.push(k);
+  const meio = ida.length<=volta.length ? ida : volta.slice().reverse();
+  if(!meio.length){ $('alRes').innerHTML=`<div class="aviso">${r[i].nome} e ${r[j].nome} são vizinhos no polígono: não há pontos intermediários entre eles.</div>`; return; }
+  const A=r[i], B=r[j], L=dist(A,B), u={E:(B.E-A.E)/L, N:(B.N-A.N)/L};
+  const nin = RES.horario ? {E:u.N, N:-u.E} : {E:-u.N, N:u.E};
+  const props = meio.map(k=>{ const p=r[k]; const t=(p.E-A.E)*u.E+(p.N-A.N)*u.N; const f={E:A.E+t*u.E, N:A.N+t*u.N};
+    const sd=(p.E-f.E)*nin.E+(p.N-f.N)*nin.N; return {k, nome:p.nome, oE:p.E, oN:p.N, E:f.E, N:f.N, desl:Math.hypot(p.E-f.E,p.N-f.N), lado: Math.abs(sd)<0.005?'já na reta':(sd>0?'para dentro':'para fora'), fora:(t<0||t>L)}; });
+  const rr=r.map((p,k)=>{ const q=props.find(x=>x.k===k); return q?{nome:p.nome,E:q.E,N:q.N}:p; });
+  const An=Math.abs(area(rr)), dA=An-RES.A, maxD=Math.max(...props.map(p=>p.desl));
+  const linhas=props.map(p=>`<tr><td>${p.nome}</td><td>${p.fora?'⚠ fora do trecho':p.lado}</td><td>${br(p.E,3)}</td><td>${br(p.N,3)}</td><td><b>${br(p.desl,2)}</b></td><td>${p.desl>0.005?azim({E:p.oE,N:p.oN},p):'–'}</td></tr>`).join('');
+  $('alRes').innerHTML=`<div class="ok">Reta ${A.nome}–${B.nome} (${br(L,2)} m) com ${props.length} ponto(s) intermediário(s). Maior desvio: <b>${br(maxD,2)} m</b>.</div>
+   <div class="res"><div class="card"><b>${br(RES.A/1e4,4)}</b><span>ha (atual)</span></div><div class="card alvo"><b>${br(An/1e4,4)}</b><span>ha com a reta</span></div><div class="card"><b>${dA>=0?'+':''}${br(dA,2)}</b><span>m² de diferença</span></div></div>
+   <div class="tabwrap" style="margin-top:8px"><table><thead><tr><th>Ponto</th><th>Sai</th><th>E na reta</th><th>N na reta</th><th>Anda (m)</th><th>Azimute</th></tr></thead><tbody>${linhas}</tbody></table></div>
+   <p class="muted" style="margin:6px 0">"Anda" = distância do ponto coletado até a reta, na perpendicular; o azimute é o rumo da caminhada a partir do ponto coletado. "Para fora" = o ponto hoje está fora da reta (alinhar diminui a área); "para dentro" = está dentro (alinhar aumenta a área).</p>
+   <div class="row"><button id="btnAplAlin">Mover pontos para a reta</button><button class="sec" id="btnTirarAlin">Tirar do polígono (reta direta)</button></div>`;
+  desenhar(r, rr, null, props.filter(p=>p.desl>0.005));
+  $('btnAplAlin').onclick=()=>{ props.forEach(q=>{ const P=PTS.find(p=>p.nome===q.nome&&Math.abs(p.E-q.oE)<1e-6&&Math.abs(p.N-q.oN)<1e-6); if(P){ if(!P.orig) P.orig={E:P.E,N:P.N}; P.E=q.E; P.N=q.N; P.alin=`${A.nome}–${B.nome}`; } }); salvar(); render(); $('alRes').innerHTML=`<div class="ok">${props.map(p=>p.nome).join(', ')} movidos para a reta ${A.nome}–${B.nome}. Nova área: <b>${br(An/1e4,4)} ha</b>. Use "Desfazer alinhamentos" para voltar às coordenadas coletadas.</div>`; toast('Pontos alinhados'); };
+  $('btnTirarAlin').onclick=()=>{ props.forEach(q=>{ const P=PTS.find(p=>p.nome===q.nome&&p.usar); if(P) P.usar=false; }); salvar(); render(); $('alRes').innerHTML=`<div class="ok">${props.map(p=>p.nome).join(', ')} desmarcados: a divisa agora vai direto de ${A.nome} a ${B.nome}. Nova área: <b>${br(An/1e4,4)} ha</b>.</div>`; };
+}
+$('btnAlin').onclick=alinhar;
+$('btnDesfazAlin').onclick=()=>{ let n=0; PTS.forEach(p=>{ if(p.orig){ p.E=p.orig.E; p.N=p.orig.N; delete p.orig; delete p.alin; n++; } }); salvar(); render(); $('alRes').innerHTML=''; toast(n+' ponto(s) voltaram às coordenadas coletadas'); };
+$('btnBaixar').onclick=()=>{ if(!RES) return; baixar('poligono_area.csv','Ponto;E;N;Obs\n'+RES.r.map(p=>`${p.nome};${p.E.toFixed(3)};${p.N.toFixed(3)};${p.alin?'alinhado na reta '+p.alin+' (coletado E '+p.orig.E.toFixed(3)+' N '+p.orig.N.toFixed(3)+')':'coletado'}`).join('\n')+`\n\nArea (m2);${RES.A.toFixed(2)}\nArea (ha);${(RES.A/1e4).toFixed(4)}\nPerimetro (m);${RES.P.toFixed(2)}`); };
 
 carregar(); render();
 // modo offline (PWA): só funciona quando aberto por um endereço http(s)
