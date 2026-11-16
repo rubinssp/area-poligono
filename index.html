@@ -51,6 +51,9 @@ details summary{cursor:pointer;color:var(--verde);font-weight:600;padding:4px 0}
 .tabs button{flex:1}
 .tabs button.ativo{background:var(--verde)}
 .tabs button:not(.ativo){background:#fff;color:var(--verde);border:1.5px solid var(--verde2)}
+tr.ruim td{background:#ffebee}
+td.prec{font-size:12px}
+.conf{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:8px}
 #toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:#263238;color:#fff;padding:10px 16px;border-radius:20px;font-size:14px;display:none;z-index:20}
 </style>
 </head>
@@ -89,7 +92,7 @@ details summary{cursor:pointer;color:var(--verde);font-weight:600;padding:4px 0}
     <button class="sec" id="btnInverter">Inverter sentido</button>
     <button class="perigo" id="btnLimpar">Limpar tudo</button>
   </div>
-  <div class="tabwrap"><table id="tabPts"><thead><tr><th>Usar</th><th>Ponto</th><th>E</th><th>N</th><th>Ordem</th></tr></thead><tbody></tbody></table></div>
+  <div class="tabwrap"><table id="tabPts"><thead><tr><th>Usar</th><th>Ponto</th><th>E</th><th>N</th><th>Prec. H (m)</th><th>Ordem</th></tr></thead><tbody></tbody></table></div>
 </section>
 
 <section id="secRes" style="display:none">
@@ -99,7 +102,17 @@ details summary{cursor:pointer;color:var(--verde);font-weight:600;padding:4px 0}
     <div class="card"><b id="rM2">–</b><span>m²</span></div>
     <div class="card"><b id="rPer">–</b><span>perímetro (m)</span></div>
     <div class="card"><b id="rNv">–</b><span>vértices</span></div>
+    <div class="card alvo"><b id="rSgl">–</b><span>ha no SGL (SIGEF)</span></div>
   </div>
+  <div class="conf">
+    <div><label>Fuso UTM (S)</label><select id="cZona"><option>18</option><option>19</option><option>20</option><option>21</option><option selected>22</option><option>23</option><option>24</option><option>25</option></select></div>
+    <div><label>Limite de precisão H (m)</label><input id="cLim" inputmode="decimal" value="0,50"></div>
+    <div><label>Área da matrícula</label><input id="cMat" inputmode="decimal" placeholder="ex.: 25,9"></div>
+    <div><label>Unidade</label><select id="cMatUn"><option value="ha">hectares</option><option value="m2">m²</option></select></div>
+  </div>
+  <div id="rSglInfo" class="muted" style="margin-top:4px"></div>
+  <div id="rMat"></div>
+  <div id="rPrec"></div>
   <div id="rAviso"></div>
   <svg id="mapa" viewBox="0 0 600 400"></svg>
   <details style="margin-top:6px"><summary>Lados (distâncias e azimutes)</summary>
@@ -196,7 +209,7 @@ function lerTexto(txt){
   const sep = separador(linhas[0]);
   let cab = linhas[0].split(sep).map(c=>c.trim().replace(/^"|"$/g,''));
   const temCab = cab.slice(1).some(c=>c && isNaN(num(c)));
-  let iN=0,iE=1,iNo=3,iH=5,info='';
+  let iN=0,iE=1,iNo=3,iH=5,iSE=-1,iSN=-1,iSH=-1,iHRMS=-1,info='';
   const ncol = cab.length;
   if(temCab){
     const nrm = cab.map(c=>c.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z]/g,''));
@@ -205,12 +218,13 @@ function lerTexto(txt){
     iE = ach(['e','este','x','easting','leste','coordenadae','utme']);
     iNo = ach(['n','norte','y','northing','coordenadan','utmn']);
     iH = ach(['h','cota','alt','altitude','z','elevacao','elev']);
+    iSE = ach(['se','sigmae','precisaoe','prece','desvioe','stde','dpe','sigmax','sx']); iSN = ach(['sn','sigman','precisaon','precn','desvion','stdn','dpn','sigmay','sy']); iSH = ach(['sh','sigmah','sigmaz','precisaoh','precisaoz','sz']); iHRMS = ach(['hrms','precisaohorizontal','prechz','phz']);
     const iLat = ach(['lat','latitude']), iLon = ach(['lon','long','longitude','lng']);
     if((iE<0||iNo<0) && iLat>=0 && iLon>=0){ iE=iLon; iNo=iLat; info='cabeçalho com latitude/longitude'; }
     else info='cabeçalho reconhecido';
     if(iE<0||iNo<0) return {pts:[], info:'não encontrei as colunas de E e N no cabeçalho: '+cab.join(' | ')};
     linhas.shift();
-  } else if(ncol>=7){ iN=0;iE=1;iNo=3;iH=5; info='formato SingularPad (nome, E, σE, N, σN, h, σh)'; }
+  } else if(ncol>=7){ iN=0;iE=1;iNo=3;iH=5;iSE=2;iSN=4;iSH=6; info='formato SingularPad (nome, E, σE, N, σN, h, σh)'; }
   else if(ncol>=4){ iN=0;iE=1;iNo=2;iH=3; info='formato nome, E, N, h'; }
   else if(ncol===3){ iN=0;iE=1;iNo=2;iH=-1; info='formato nome, E, N'; }
   else return {pts:[], info:'formato não reconhecido (precisa de pelo menos nome, E e N)'};
@@ -218,14 +232,16 @@ function lerTexto(txt){
   for(const l of linhas){
     const c=l.split(sep).map(x=>x.trim().replace(/^"|"$/g,''));
     let E=num(c[iE]), N=num(c[iNo]); if(!isFinite(E)||!isFinite(N)) continue;
-    pts.push({nome:c[iN]||('P'+(pts.length+1)), E, N, h: iH>=0?num(c[iH]):NaN, usar:true});
+    const sE=iSE>=0?num(c[iSE]):NaN, sN=iSN>=0?num(c[iSN]):NaN;
+    const ph = iHRMS>=0 ? num(c[iHRMS]) : (isFinite(sE)&&isFinite(sN) ? Math.hypot(sE,sN) : NaN);
+    pts.push({nome:c[iN]||('P'+(pts.length+1)), E, N, h: iH>=0?num(c[iH]):NaN, ph, pv: iSH>=0?num(c[iSH]):NaN, usar:true});
   }
   // geográficas?
   if(pts.length && pts.every(p=>Math.abs(p.E)<=180 && Math.abs(p.N)<=90)){
     // se a coluna "E" parece latitude (−35..6) e a "N" longitude (−75..−30), troca
     if(pts.every(p=>p.E>=-35&&p.E<=6 && p.N>=-75&&p.N<=-30)) pts.forEach(p=>{const t=p.E;p.E=p.N;p.N=t;});
     const zona = Math.floor((pts[0].E+180)/6)+1;
-    pts.forEach(p=>{const u=geoUtm(p.N,p.E,zona);p.E=u[0];p.N=u[1];});
+    pts.forEach(p=>{const u=geoUtm(p.N,p.E,zona);p.E=u[0];p.N=u[1];}); definirZona(zona);
     info += ` · coordenadas geográficas convertidas para UTM fuso ${zona}S`;
   }
   return {pts, info};
@@ -258,7 +274,7 @@ function aplicarLeitura(txt, origem){
   usarPontos(pts, origem, info);
 }
 function usarPontos(pts, origem, info){
-  PTS = pts.map(p=>({nome:p.nome, E:p.E, N:p.N, h:isFinite(p.h)?p.h:NaN, usar:p.usar!==false})); salvar(); $('alRes').innerHTML='';
+  PTS = pts.map(p=>({nome:p.nome, E:p.E, N:p.N, h:isFinite(p.h)?p.h:NaN, ph:isFinite(p.ph)?p.ph:NaN, pv:isFinite(p.pv)?p.pv:NaN, usar:p.usar!==false})); salvar(); $('alRes').innerHTML='';
   $('msgArq').innerHTML=`<div class="ok">${pts.length} pontos lidos de ${origem} — ${info}.</div>`;
   render();
 }
@@ -275,7 +291,7 @@ function oferecerConjuntos(conj, origem, info){
 }
 function paraUTM(lista){ // lista de {nome,lon,lat,h}
   if(!lista.length) return {pts:[], zona:null};
-  const zona = Math.floor((lista[0].lon+180)/6)+1;
+  const zona = Math.floor((lista[0].lon+180)/6)+1; definirZona(zona);
   return {pts: lista.map(p=>{ const u=geoUtm(p.lat,p.lon,zona); return {nome:p.nome, E:u[0], N:u[1], h:p.h}; }), zona};
 }
 function semFechamento(a){ if(a.length>2){ const f=a[0], l=a[a.length-1]; if(Math.abs(f.E-l.E)<1e-6 && Math.abs(f.N-l.N)<1e-6) a.pop(); } return a; }
@@ -365,7 +381,7 @@ function lerDXF(txt, origem){
   const todos=conj.flatMap(c=>c.pts);
   if(todos.length && todos.every(p=>Math.abs(p.E)<=180 && Math.abs(p.N)<=90)){
     const zona=Math.floor((todos[0].E+180)/6)+1;
-    conj.forEach(c=>c.pts.forEach(p=>{ const u=geoUtm(p.N,p.E,zona); p.E=u[0]; p.N=u[1]; }));
+    conj.forEach(c=>c.pts.forEach(p=>{ const u=geoUtm(p.N,p.E,zona); p.E=u[0]; p.N=u[1]; })); definirZona(zona);
     info=`DXF em graus, convertido para UTM fuso ${zona}S`;
   }
   const ordem={pol:0,lin:1,pts:2}; conj.sort((a,b)=>ordem[a.tipo]-ordem[b.tipo]);
@@ -401,8 +417,8 @@ function render(){
   $('secPontos').style.display=PTS.length?'block':'none';
   const tb=$('tabPts').querySelector('tbody'); tb.innerHTML='';
   PTS.forEach((p,i)=>{
-    const tr=document.createElement('tr'); if(!p.usar) tr.className='off';
-    tr.innerHTML=`<td><input type="checkbox" ${p.usar?'checked':''} style="width:22px;height:22px;min-height:0"></td><td>${p.nome}${p.orig?' <span title="alinhado" style="color:#ef6c00">✎</span>':''}</td><td>${br(p.E,3)}</td><td>${br(p.N,3)}</td><td class="ord"><button class="sec">▲</button><button class="sec">▼</button></td>`;
+    const tr=document.createElement('tr'); const ruim=isFinite(p.ph)&&p.ph>CONF.lim; tr.className=(p.usar?'':'off')+(ruim?' ruim':'');
+    tr.innerHTML=`<td><input type="checkbox" ${p.usar?'checked':''} style="width:22px;height:22px;min-height:0"></td><td>${p.nome}${p.orig?' <span title="alinhado" style="color:#ef6c00">✎</span>':''}</td><td>${br(p.E,3)}</td><td>${br(p.N,3)}</td><td class="prec">${isFinite(p.ph)?(ruim?'⚠ ':'')+br(p.ph,3):'–'}</td><td class="ord"><button class="sec">▲</button><button class="sec">▼</button></td>`;
     tr.querySelector('input').onchange=e=>{p.usar=e.target.checked; salvar(); render();};
     const [up,dn]=tr.querySelectorAll('td.ord button');
     up.onclick=()=>{ if(i>0){[PTS[i-1],PTS[i]]=[PTS[i],PTS[i-1]]; salvar(); render();} };
@@ -424,6 +440,7 @@ function calcular(){
   const tb=$('tabLados').querySelector('tbody'); tb.innerHTML='';
   r.forEach((p,i)=>{ const q=r[(i+1)%r.length]; tb.insertAdjacentHTML('beforeend',`<tr><td>${p.nome}</td><td>${q.nome}</td><td>${br(dist(p,q),2)}</td><td>${azim(p,q)}</td></tr>`); });
   desenhar(r, null);
+  conferir();
   // opções do ajuste
   const sel=$('aLado'), ant=sel.value; sel.innerHTML='';
   r.forEach((p,i)=>{ const q=r[(i+1)%r.length]; sel.insertAdjacentHTML('beforeend',`<option value="${i}">${p.nome} – ${q.nome} (${br(dist(p,q),1)} m)</option>`); });
@@ -511,9 +528,10 @@ $('btnCalcAlvo').onclick=()=>{
    </ul>
    <p>No desenho: tracejado cinza = polígono antigo; azul = polígono novo; setas laranja = caminho de cada ponto, do antigo para o novo.</p>
    </div></details>
-   <div class="row" style="margin-top:8px"><button class="sec" id="btnCopiarAj">Copiar pontos</button><button class="sec" id="btnBaixarAj">Salvar CSV ajustado</button></div>`;
+   <div class="row" style="margin-top:8px"><button class="sec" id="btnCopiarAj">Copiar pontos</button><button class="sec" id="btnBaixarAj">Salvar CSV ajustado</button></div>${blocoSingular('btnSingAj')}`;
   RES.ajuste={rr, proj, mov, d, Af, Pf};
   desenhar(r, rr, proj, todosMov);
+  $('btnSingAj').onclick=()=>baixar('implantar_ajuste_'+new Date().toISOString().slice(0,10)+'.csv', csvSingular(mov.concat(proj).map(p=>({...p, h:hDe(p.nome)})), 'IMPLANTAR'), true);
   $('btnCopiarAj').onclick=()=>copiar(mov.concat(proj).map(p=>`${p.nome};${p.E.toFixed(3)};${p.N.toFixed(3)}`).join('\n'));
   $('btnBaixarAj').onclick=()=>baixar('vertices_ajustados.csv', 'Ponto;E;N;Obs\n'+rr.map(p=>`${p.nome};${p.E.toFixed(3)};${p.N.toFixed(3)};${(p.nome===A0.nome&&dist(nv.a,A0)>0.001)||(p.nome===B0.nome&&dist(nv.b,B0)>0.001)?'calculado':'coletado'}`).join('\n')+(proj.length?'\n'+proj.map(p=>`${p.nome};${p.E.toFixed(3)};${p.N.toFixed(3)};projetado no lado`).join('\n'):'')+`\n\nArea (m2);${Af.toFixed(2)}\nArea (ha);${(Af/1e4).toFixed(4)}\nPerimetro (m);${Pf.toFixed(2)}`);
 };
@@ -540,9 +558,73 @@ function desenhar(r, rr, proj, setas){
 
 // ---------------- exportar ----------------
 function copiar(t){ (navigator.clipboard&&navigator.clipboard.writeText?navigator.clipboard.writeText(t):Promise.reject()).then(()=>toast('Copiado')).catch(()=>{ const ta=document.createElement('textarea'); ta.value=t; document.body.appendChild(ta); ta.select(); try{document.execCommand('copy');toast('Copiado');}catch(e){toast('Não foi possível copiar');} ta.remove(); }); }
-function baixar(nome, txt){ try{ const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob(['﻿'+txt],{type:'text/csv'})); a.download=nome; document.body.appendChild(a); a.click(); setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},500); toast('Arquivo salvo em Downloads'); }catch(e){ copiar(txt); } }
+function baixar(nome, txt, semBOM){ try{ const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([(semBOM?'':'﻿')+txt],{type:'text/csv'})); a.download=nome; document.body.appendChild(a); a.click(); setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},500); toast('Arquivo salvo em Downloads'); }catch(e){ copiar(txt); } }
 function textoResultado(){ if(!RES) return ''; return `Área: ${br(RES.A,2)} m² (${br(RES.A/1e4,4)} ha)\nPerímetro: ${br(RES.P,2)} m\nVértices (${RES.r.length}): ${RES.r.map(p=>p.nome).join(' - ')}`; }
 $('btnCopiar').onclick=()=>copiar(textoResultado());
+
+
+// ---------------- conferências: fuso, precisão, matrícula, SGL ----------------
+let CONF={zona:22, lim:0.5, mat:'', matUn:'ha'};
+try{ Object.assign(CONF, JSON.parse(localStorage.getItem('areaPoligonoConf')||'{}')); }catch(e){}
+function salvarConf(){ try{ localStorage.setItem('areaPoligonoConf', JSON.stringify(CONF)); }catch(e){} }
+function definirZona(z){ if(z>=18&&z<=25){ CONF.zona=z; salvarConf(); const el=$('cZona'); if(el) el.value=String(z); } }
+function utmGeo(E, N, zona){   // UTM sul (SIRGAS 2000 / GRS80) -> lat, lon (graus)
+  const a=6378137, f=1/298.257222101, k0=0.9996, e2=f*(2-f), ep2=e2/(1-e2), e1=(1-Math.sqrt(1-e2))/(1+Math.sqrt(1-e2));
+  const x=E-500000, y=N-10000000, M=y/k0, mu=M/(a*(1-e2/4-3*e2*e2/64-5*e2**3/256));
+  const p1=mu+(3*e1/2-27*e1**3/32)*Math.sin(2*mu)+(21*e1*e1/16-55*e1**4/32)*Math.sin(4*mu)+(151*e1**3/96)*Math.sin(6*mu)+(1097*e1**4/512)*Math.sin(8*mu);
+  const N1=a/Math.sqrt(1-e2*Math.sin(p1)**2), T1=Math.tan(p1)**2, C1=ep2*Math.cos(p1)**2, R1=a*(1-e2)/(1-e2*Math.sin(p1)**2)**1.5, D=x/(N1*k0);
+  const lat=p1-(N1*Math.tan(p1)/R1)*(D*D/2-(5+3*T1+10*C1-4*C1*C1-9*ep2)*D**4/24+(61+90*T1+298*C1+45*T1*T1-252*ep2-3*C1*C1)*D**6/720);
+  const lon=(D-(1+2*T1+C1)*D**3/6+(5-2*C1+28*T1-3*C1*C1+8*ep2+24*T1*T1)*D**5/120)/Math.cos(p1);
+  return [lat*180/Math.PI, ((zona-1)*6-180+3)+lon*180/Math.PI];
+}
+function areaSGL(r, zona){
+  // Sistema Geodésico Local (NBR 14166 / SIGEF): plano topocêntrico com origem no ponto médio do polígono
+  const a=6378137, f=1/298.257222101, e2=f*(2-f);
+  const hs=r.map(p=>p.h).filter(isFinite), hm=hs.length?hs.reduce((x,y)=>x+y,0)/hs.length:0;
+  const g=r.map(p=>{ const [la,lo]=utmGeo(p.E,p.N,zona); return {la:la*Math.PI/180, lo:lo*Math.PI/180, h:isFinite(p.h)?p.h:hm}; });
+  const ecef=q=>{ const Nn=a/Math.sqrt(1-e2*Math.sin(q.la)**2); return [(Nn+q.h)*Math.cos(q.la)*Math.cos(q.lo),(Nn+q.h)*Math.cos(q.la)*Math.sin(q.lo),(Nn*(1-e2)+q.h)*Math.sin(q.la)]; };
+  const o={la:g.reduce((s,q)=>s+q.la,0)/g.length, lo:g.reduce((s,q)=>s+q.lo,0)/g.length, h:hm}, O=ecef(o);
+  const sl=Math.sin(o.la), cl=Math.cos(o.la), so=Math.sin(o.lo), co=Math.cos(o.lo);
+  const loc=g.map(q=>{ const X=ecef(q), dx=X[0]-O[0], dy=X[1]-O[1], dz=X[2]-O[2]; return {E:-so*dx+co*dy, N:-sl*co*dx-sl*so*dy+cl*dz}; });
+  return {A:Math.abs(area(loc)), P:perim(loc), hm, temH:hs.length===r.length};
+}
+function conferir(){
+  if(!RES) return; const r=RES.r;
+  // SGL
+  const s=areaSGL(r, CONF.zona); RES.sgl=s;
+  $('rSgl').textContent=br(s.A/1e4,4);
+  $('rSglInfo').innerHTML=`SGL: ${br(s.A,2)} m² · perímetro ${br(s.P,2)} m · diferença para UTM ${s.A-RES.A>=0?'+':''}${br(s.A-RES.A,2)} m²${s.temH?'':' · <b>sem altitude em todos os pontos</b>: usada a altitude média ('+br(s.hm,1)+' m)'}. O SIGEF calcula a área oficial no SGL.`;
+  // matrícula
+  const m=num(CONF.mat);
+  if(isFinite(m)&&m>0){
+    const mm = CONF.matUn==='ha' ? m*1e4 : m;
+    const lin=(rot,v)=>{ const d=v-mm, pc=100*d/mm; return `<tr><td>${rot}</td><td>${br(v,2)}</td><td style="color:${d<0?'#c62828':'#2e7d32'}"><b>${d>=0?'+':''}${br(d,2)}</b></td><td style="color:${d<0?'#c62828':'#2e7d32'}">${d>=0?'+':''}${br(pc,2)} %</td></tr>`; };
+    $('rMat').innerHTML=`<div class="tabwrap" style="margin-top:8px"><table><thead><tr><th>Área</th><th>m²</th><th>Diferença (m²)</th><th>%</th></tr></thead><tbody>
+      <tr><td>Matrícula</td><td>${br(mm,2)}</td><td>–</td><td>–</td></tr>${lin('Medida (UTM)',RES.A)}${lin('Medida (SGL)',s.A)}</tbody></table></div>
+      <p class="muted" style="margin:4px 0">Positivo = área medida maior que a da matrícula. Confira a tolerância aceita pelo cartório para decidir se precisa de retificação.</p>`;
+  } else $('rMat').innerHTML='';
+  // precisão
+  const ruins=r.filter(p=>isFinite(p.ph)&&p.ph>CONF.lim), semInfo=r.filter(p=>!isFinite(p.ph)).length;
+  if(ruins.length) $('rPrec').innerHTML=`<div class="aviso">⚠ <b>${ruins.length} vértice(s) com precisão horizontal pior que ${br(CONF.lim,CONF.lim<0.1?3:2)} m:</b> ${ruins.map(p=>`${p.nome} (${br(p.ph,3)} m)`).join(', ')}. Recolete com solução FIXED antes de sair do campo.</div>`;
+  else if(r.some(p=>isFinite(p.ph))) $('rPrec').innerHTML=`<div class="ok">Precisão OK: todos os vértices com σ horizontal até ${br(CONF.lim,CONF.lim<0.1?3:2)} m (pior: ${br(Math.max(...r.filter(p=>isFinite(p.ph)).map(p=>p.ph)),3)} m)${semInfo?` · ${semInfo} sem informação de precisão`:''}.</div>`;
+  else $('rPrec').innerHTML='<p class="muted">O arquivo não traz precisão dos pontos (σE/σN), então a conferência de precisão não foi feita.</p>';
+}
+$('cZona').value=String(CONF.zona); $('cLim').value=String(CONF.lim).replace('.',','); $('cMat').value=CONF.mat; $('cMatUn').value=CONF.matUn;
+$('cZona').onchange=e=>{ CONF.zona=+e.target.value; salvarConf(); conferir(); };
+$('cLim').oninput=e=>{ const v=num(e.target.value); if(isFinite(v)&&v>0){ CONF.lim=v; salvarConf(); render(); } };
+$('cMat').oninput=e=>{ CONF.mat=e.target.value; salvarConf(); conferir(); };
+$('cMatUn').onchange=e=>{ CONF.matUn=e.target.value; salvarConf(); conferir(); };
+
+// ---------------- exportação para a SingularPad (implantação) ----------------
+function csvSingular(lista, codigo){
+  // formato sem cabeçalho: Nome,E,N,Z,Código (separador vírgula, ponto decimal)
+  return lista.map(p=>`${p.nome},${p.E.toFixed(3)},${p.N.toFixed(3)},${isFinite(p.h)?p.h.toFixed(3):'0.000'},${codigo}`).join('\r\n')+'\r\n';
+}
+function blocoSingular(id){
+  return `<div class="row" style="margin-top:6px"><button id="${id}">Exportar p/ SingularPad (implantar)</button></div>
+  <p class="muted" style="margin:4px 0">Gera um CSV sem cabeçalho no formato <b>Nome,E,N,Z,Código</b>. Na SingularPad, use a importação de pontos do projeto com o formato "Nome,E,N,Z,Código" (se não existir, crie esse formato personalizado) e depois a implantação de pontos.</p>`;
+}
+function hDe(nome){ const P=PTS.find(p=>p.nome===nome); return P?P.h:NaN; }
 
 // ---------------- alinhamento de pontos intermediários ----------------
 function alinhar(){
@@ -565,8 +647,9 @@ function alinhar(){
    <div class="res"><div class="card"><b>${br(RES.A/1e4,4)}</b><span>ha (atual)</span></div><div class="card alvo"><b>${br(An/1e4,4)}</b><span>ha com a reta</span></div><div class="card"><b>${dA>=0?'+':''}${br(dA,2)}</b><span>m² de diferença</span></div></div>
    <div class="tabwrap" style="margin-top:8px"><table><thead><tr><th>Ponto</th><th>Sai</th><th>E na reta</th><th>N na reta</th><th>Anda (m)</th><th>Azimute</th></tr></thead><tbody>${linhas}</tbody></table></div>
    <p class="muted" style="margin:6px 0">"Anda" = distância do ponto coletado até a reta, na perpendicular; o azimute é o rumo da caminhada a partir do ponto coletado. "Para fora" = o ponto hoje está fora da reta (alinhar diminui a área); "para dentro" = está dentro (alinhar aumenta a área).</p>
-   <div class="row"><button id="btnAplAlin">Mover pontos para a reta</button><button class="sec" id="btnTirarAlin">Tirar do polígono (reta direta)</button></div>`;
+   <div class="row"><button id="btnAplAlin">Mover pontos para a reta</button><button class="sec" id="btnTirarAlin">Tirar do polígono (reta direta)</button></div>${blocoSingular('btnSingAlin')}`;
   desenhar(r, rr, null, props.filter(p=>p.desl>0.005));
+  $('btnSingAlin').onclick=()=>baixar('implantar_alinhamento_'+new Date().toISOString().slice(0,10)+'.csv', csvSingular(props.filter(p=>p.desl>0.005).map(p=>({...p, h:hDe(p.nome)})), 'IMPLANTAR'), true);
   $('btnAplAlin').onclick=()=>{ props.forEach(q=>{ const P=PTS.find(p=>p.nome===q.nome&&Math.abs(p.E-q.oE)<1e-6&&Math.abs(p.N-q.oN)<1e-6); if(P){ if(!P.orig) P.orig={E:P.E,N:P.N}; P.E=q.E; P.N=q.N; P.alin=`${A.nome}–${B.nome}`; } }); salvar(); render(); $('alRes').innerHTML=`<div class="ok">${props.map(p=>p.nome).join(', ')} movidos para a reta ${A.nome}–${B.nome}. Nova área: <b>${br(An/1e4,4)} ha</b>. Use "Desfazer alinhamentos" para voltar às coordenadas coletadas.</div>`; toast('Pontos alinhados'); };
   $('btnTirarAlin').onclick=()=>{ props.forEach(q=>{ const P=PTS.find(p=>p.nome===q.nome&&p.usar); if(P) P.usar=false; }); salvar(); render(); $('alRes').innerHTML=`<div class="ok">${props.map(p=>p.nome).join(', ')} desmarcados: a divisa agora vai direto de ${A.nome} a ${B.nome}. Nova área: <b>${br(An/1e4,4)} ha</b>.</div>`; };
 }
