@@ -61,7 +61,7 @@ details summary{cursor:pointer;color:var(--verde);font-weight:600;padding:4px 0}
 <section>
   <h2>1. Pontos coletados</h2>
   <div class="row">
-    <label class="btn" style="text-align:center;flex:1 1 140px">Abrir arquivo (.txt/.csv)<input type="file" id="arq" accept=".txt,.csv,.dat,text/plain" style="display:none"></label>
+    <label class="btn" style="text-align:center;flex:1 1 140px">Abrir arquivo<input type="file" id="arq" accept=".txt,.csv,.dat,.kml,.kmz,.dxf,.dwg,text/plain,application/vnd.google-earth.kml+xml,application/vnd.google-earth.kmz" style="display:none"></label>
     <button class="sec" id="btnColar" style="flex:1 1 120px">Colar texto</button>
     <button class="sec" id="btnManual" style="flex:1 1 120px">Digitar ponto</button>
   </div>
@@ -77,7 +77,7 @@ details summary{cursor:pointer;color:var(--verde);font-weight:600;padding:4px 0}
     </div>
     <div class="row" style="margin-top:6px"><button id="btnAddManual">Adicionar ponto</button></div>
   </div>
-  <p class="muted" id="infoArq">Formato da SingularPad sem cabeçalho (nome, E, σE, N, σN, h, σh) é reconhecido automaticamente. Também aceita arquivos com cabeçalho (Ponto/Nome, E/Este/X, N/Norte/Y) e coordenadas geográficas (lat/long), que são convertidas para UTM.</p>
+  <p class="muted" id="infoArq">Formato da SingularPad sem cabeçalho (nome, E, σE, N, σN, h, σh) é reconhecido automaticamente. Também aceita arquivos com cabeçalho (Ponto/Nome, E/Este/X, N/Norte/Y) e coordenadas geográficas (lat/long), que são convertidas para UTM. <b>KML/KMZ</b> (Google Earth) e <b>DXF</b> (AutoCAD, QGIS, coletora) também são lidos; DWG precisa ser salvo como DXF antes.</p>
   <div id="msgArq"></div>
 </section>
 
@@ -244,11 +244,140 @@ function autoIntersecta(r){ const n=r.length; for(let i=0;i<n;i++) for(let j=i+2
 function aplicarLeitura(txt, origem){
   const {pts, info} = lerTexto(txt);
   if(!pts.length){ $('msgArq').innerHTML=`<div class="aviso">Nenhum ponto lido. ${info}</div>`; return; }
-  PTS = pts; salvar();
+  usarPontos(pts, origem, info);
+}
+function usarPontos(pts, origem, info){
+  PTS = pts.map(p=>({nome:p.nome, E:p.E, N:p.N, h:isFinite(p.h)?p.h:NaN, usar:p.usar!==false})); salvar();
   $('msgArq').innerHTML=`<div class="ok">${pts.length} pontos lidos de ${origem} — ${info}.</div>`;
   render();
 }
-$('arq').addEventListener('change', e=>{ const f=e.target.files[0]; if(!f) return; const r=new FileReader(); r.onload=()=>aplicarLeitura(r.result, f.name); r.readAsText(f); e.target.value=''; });
+// ----- vários conjuntos (polígonos, linhas, pontos) num arquivo: deixa escolher -----
+function oferecerConjuntos(conj, origem, info){
+  conj = conj.filter(c=>c.pts.length);
+  if(!conj.length){ $('msgArq').innerHTML=`<div class="aviso">Nenhuma geometria encontrada em ${origem}. ${info||''}</div>`; return; }
+  if(conj.length===1){ usarPontos(conj[0].pts, origem, `${info} · ${conj[0].nome}`); return; }
+  const tipoTxt={pol:'polígono', lin:'linha', pts:'pontos'};
+  let h=`<div class="ok">${origem}: ${info}. Encontrei ${conj.length} feições — escolha qual usar:</div><div class="row" style="flex-direction:column;align-items:stretch;gap:6px">`;
+  conj.forEach((c,k)=>{ const a = c.tipo==='pol' ? ` · ${br(Math.abs(area(c.pts))/1e4,4)} ha` : ''; h+=`<button class="sec" data-k="${k}" style="text-align:left">${c.nome} — ${tipoTxt[c.tipo]} com ${c.pts.length} ${c.tipo==='pts'?'pontos':'vértices'}${a}</button>`; });
+  h+='</div>'; $('msgArq').innerHTML=h;
+  $('msgArq').querySelectorAll('button[data-k]').forEach(b=>b.onclick=()=>{ const c=conj[+b.dataset.k]; usarPontos(c.pts, origem, `${info} · ${c.nome}`); });
+}
+function paraUTM(lista){ // lista de {nome,lon,lat,h}
+  if(!lista.length) return {pts:[], zona:null};
+  const zona = Math.floor((lista[0].lon+180)/6)+1;
+  return {pts: lista.map(p=>{ const u=geoUtm(p.lat,p.lon,zona); return {nome:p.nome, E:u[0], N:u[1], h:p.h}; }), zona};
+}
+function semFechamento(a){ if(a.length>2){ const f=a[0], l=a[a.length-1]; if(Math.abs(f.E-l.E)<1e-6 && Math.abs(f.N-l.N)<1e-6) a.pop(); } return a; }
+
+// ----- KML -----
+function lerKML(xmlTxt, origem){
+  const doc=new DOMParser().parseFromString(xmlTxt,'application/xml');
+  if(doc.getElementsByTagName('parsererror').length){ $('msgArq').innerHTML='<div class="aviso">KML inválido.</div>'; return; }
+  const tag=(el,n)=>Array.from(el.getElementsByTagNameNS('*',n));
+  const coords=t=>t.trim().split(/\s+/).map(c=>c.split(',').map(Number)).filter(c=>c.length>=2&&isFinite(c[0])&&isFinite(c[1]));
+  const conj=[], soltos=[]; let zonaInfo=null;
+  tag(doc,'Placemark').forEach((pm,ip)=>{
+    const nomeEl=Array.from(pm.children).find(c=>c.localName==='name');
+    const nomePm=(nomeEl?nomeEl.textContent:`Feição ${ip+1}`).trim();
+    tag(pm,'Polygon').forEach((pg,k)=>{ const ob=tag(pg,'outerBoundaryIs')[0]||pg; const c=coords((tag(ob,'coordinates')[0]||{}).textContent||'');
+      const u=paraUTM(c.map((x,i)=>({nome:`V${i+1}`,lon:x[0],lat:x[1],h:x[2]}))); zonaInfo=u.zona; conj.push({nome:nomePm+(k?` (${k+1})`:''), tipo:'pol', pts:semFechamento(u.pts)}); });
+    tag(pm,'LineString').forEach((ls,k)=>{ const c=coords((tag(ls,'coordinates')[0]||{}).textContent||'');
+      const u=paraUTM(c.map((x,i)=>({nome:`V${i+1}`,lon:x[0],lat:x[1],h:x[2]}))); zonaInfo=u.zona; conj.push({nome:nomePm+(k?` (${k+1})`:''), tipo:'lin', pts:semFechamento(u.pts)}); });
+    tag(pm,'Point').forEach(pt=>{ const c=coords((tag(pt,'coordinates')[0]||{}).textContent||''); if(c[0]) soltos.push({nome:nomePm, lon:c[0][0], lat:c[0][1], h:c[0][2]}); });
+  });
+  if(soltos.length){ const u=paraUTM(soltos); zonaInfo=zonaInfo||u.zona;
+    conj.forEach(c=>c.pts.forEach(v=>{ const m=u.pts.find(q=>Math.hypot(q.E-v.E,q.N-v.N)<0.1); if(m) v.nome=m.nome; }));
+    conj.push({nome:'Pontos do arquivo', tipo:'pts', pts:u.pts}); }
+  oferecerConjuntos(conj, origem, `KML convertido para UTM fuso ${zonaInfo||'?'}S`);
+}
+// ----- KMZ (zip com um .kml dentro) -----
+async function lerKMZ(buf, origem){
+  try{
+    const dv=new DataView(buf); let eocd=-1;
+    for(let i=buf.byteLength-22;i>=Math.max(0,buf.byteLength-66000);i--){ if(dv.getUint32(i,true)===0x06054b50){eocd=i;break;} }
+    if(eocd<0) throw new Error('arquivo KMZ corrompido');
+    const n=dv.getUint16(eocd+10,true); let off=dv.getUint32(eocd+16,true); const dec=new TextDecoder('utf-8'); let alvo=null;
+    for(let k=0;k<n;k++){
+      const met=dv.getUint16(off+10,true), csize=dv.getUint32(off+20,true), nl=dv.getUint16(off+28,true), xl=dv.getUint16(off+30,true), cl=dv.getUint16(off+32,true), loc=dv.getUint32(off+42,true);
+      const nome=dec.decode(new Uint8Array(buf,off+46,nl));
+      if(/\.kml$/i.test(nome) && (!alvo || /doc\.kml$/i.test(nome))) alvo={met,csize,loc,nome};
+      off+=46+nl+xl+cl;
+    }
+    if(!alvo) throw new Error('não há arquivo .kml dentro do KMZ');
+    const lnl=dv.getUint16(alvo.loc+26,true), lxl=dv.getUint16(alvo.loc+28,true);
+    const dados=new Uint8Array(buf, alvo.loc+30+lnl+lxl, alvo.csize);
+    let txt;
+    if(alvo.met===0) txt=dec.decode(dados);
+    else if(alvo.met===8){
+      if(typeof DecompressionStream==='undefined') throw new Error('este navegador não descompacta KMZ; atualize o Chrome ou salve como KML no Google Earth');
+      const st=new Blob([dados]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+      txt=await new Response(st).text();
+    } else throw new Error('compressão do KMZ não suportada');
+    lerKML(txt, origem);
+  }catch(e){ $('msgArq').innerHTML=`<div class="aviso">Não consegui ler o KMZ: ${e.message}</div>`; }
+}
+// ----- DXF (texto/ASCII) -----
+function lerDXF(txt, origem){
+  const L=txt.replace(/\r/g,'').split('\n'); const pares=[];
+  for(let i=0;i+1<L.length;i+=2) pares.push([parseInt(L[i].trim(),10), L[i+1].trim()]);
+  if(!pares.some(p=>p[0]===0&&p[1]==='SECTION')){ $('msgArq').innerHTML='<div class="aviso">DXF não reconhecido (precisa ser DXF em texto/ASCII, não binário).</div>'; return; }
+  let sec='', ents=[], cur=null;
+  for(let i=0;i<pares.length;i++){ const [c,v]=pares[i];
+    if(c===0 && v==='SECTION'){ sec=(pares[i+1]&&pares[i+1][0]===2)?pares[i+1][1]:''; continue; }
+    if(c===0 && v==='ENDSEC'){ if(cur) ents.push(cur); cur=null; sec=''; continue; }
+    if(sec!=='ENTITIES') continue;
+    if(c===0){ if(cur) ents.push(cur); cur={tipo:v, g:[]}; } else if(cur) cur.g.push([c,v]);
+  }
+  const conj=[], pontos=[], textos=[]; let polyAtual=null, nPol=0, nLin=0;
+  const val=(e,c)=>{ const x=e.g.find(p=>p[0]===c); return x?x[1]:undefined; };
+  const fechou=vs=>vs.length>2 && Math.hypot(vs[0].E-vs[vs.length-1].E, vs[0].N-vs[vs.length-1].N)<1e-6;
+  const addPoly=(vs,fl,lay)=>{ const fechada=fl||fechou(vs); if(fechada) nPol++; else nLin++;
+    conj.push({nome:`${fechada?'Polilinha fechada':'Polilinha aberta'} ${fechada?nPol:nLin}${lay?' – camada '+lay:''}`, tipo:fechada?'pol':'lin', pts:semFechamento(vs.map((p,k)=>({nome:`V${k+1}`,E:p.E,N:p.N,h:p.h})))}); };
+  for(const e of ents){
+    const lay=val(e,8)||'';
+    if(e.tipo==='LWPOLYLINE'){ const vs=[]; let p=null;
+      for(const [c,v] of e.g){ if(c===10){ p={E:parseFloat(v),h:NaN}; vs.push(p);} else if(c===20&&p) p.N=parseFloat(v); }
+      addPoly(vs.filter(p=>isFinite(p.E)&&isFinite(p.N)), (parseInt(val(e,70)||'0',10)&1)===1, lay);
+    } else if(e.tipo==='POLYLINE'){ polyAtual={fl:(parseInt(val(e,70)||'0',10)&1)===1, lay, vs:[]}; }
+    else if(e.tipo==='VERTEX' && polyAtual){ const E=parseFloat(val(e,10)), N=parseFloat(val(e,20)), H=parseFloat(val(e,30)); if(isFinite(E)&&isFinite(N)) polyAtual.vs.push({E,N,h:H}); }
+    else if(e.tipo==='SEQEND' && polyAtual){ addPoly(polyAtual.vs, polyAtual.fl, polyAtual.lay); polyAtual=null; }
+    else if(e.tipo==='POINT' || e.tipo==='INSERT'){ const E=parseFloat(val(e,10)), N=parseFloat(val(e,20)), H=parseFloat(val(e,30)); if(isFinite(E)&&isFinite(N)) pontos.push({nome:'', E, N, h:H, insert:e.tipo==='INSERT'}); }
+    else if(e.tipo==='ATTRIB' && pontos.length && pontos[pontos.length-1].insert && !pontos[pontos.length-1].nome){ const t=val(e,1); if(t) pontos[pontos.length-1].nome=t; }
+    else if(e.tipo==='TEXT' || e.tipo==='MTEXT'){ const E=parseFloat(val(e,10)), N=parseFloat(val(e,20)); let t=(val(e,1)||'').replace(/\\[A-Za-z][^;]*;|[{}]/g,'').trim(); if(isFinite(E)&&isFinite(N)&&t) textos.push({t,E,N}); }
+  }
+  // nome de cada ponto: atributo do bloco ou o texto mais próximo (até 5 m)
+  pontos.forEach((p,k)=>{ if(!p.nome){ let best=null, bd=5; for(const t of textos){ const d=Math.hypot(t.E-p.E,t.N-p.N); if(d<bd){bd=d;best=t;} } p.nome = best ? best.t : `P${k+1}`; } });
+  // vértices das polilinhas herdam o nome do ponto que está em cima (até 5 cm)
+  for(const c of conj) c.pts.forEach(v=>{ const m=pontos.find(p=>Math.hypot(p.E-v.E,p.N-v.N)<0.05); if(m){ v.nome=m.nome; if(!isFinite(v.h)) v.h=m.h; } });
+  if(pontos.length) conj.push({nome:'Pontos do desenho', tipo:'pts', pts:pontos.map(p=>({nome:p.nome,E:p.E,N:p.N,h:p.h}))});
+  let info='DXF lido em coordenadas planas (UTM)';
+  const todos=conj.flatMap(c=>c.pts);
+  if(todos.length && todos.every(p=>Math.abs(p.E)<=180 && Math.abs(p.N)<=90)){
+    const zona=Math.floor((todos[0].E+180)/6)+1;
+    conj.forEach(c=>c.pts.forEach(p=>{ const u=geoUtm(p.N,p.E,zona); p.E=u[0]; p.N=u[1]; }));
+    info=`DXF em graus, convertido para UTM fuso ${zona}S`;
+  }
+  const ordem={pol:0,lin:1,pts:2}; conj.sort((a,b)=>ordem[a.tipo]-ordem[b.tipo]);
+  oferecerConjuntos(conj, origem, info);
+}
+function avisoDWG(origem){
+  $('msgArq').innerHTML=`<div class="aviso"><b>${origem}</b> é DWG, formato fechado da Autodesk que não pode ser lido aqui sem internet. Salve como <b>DXF</b> e abra de novo:<br>• AutoCAD / AutoCAD LT: Salvar como → DXF (qualquer versão).<br>• QGIS: arraste o DWG para o mapa e exporte como DXF.<br>• Grátis: <i>ODA File Converter</i> converte DWG → DXF em lote.<br>• Na coletora, use a exportação DXF em vez de DWG.</div>`;
+}
+$('arq').addEventListener('change', async e=>{ const f=e.target.files[0]; if(!f) return; e.target.value='';
+  const ext=(f.name.split('.').pop()||'').toLowerCase();
+  try{
+    if(ext==='dwg'){ avisoDWG(f.name); return; }
+    if(ext==='kmz'){ await lerKMZ(await f.arrayBuffer(), f.name); return; }
+    if(ext==='kml'){ lerKML(await f.text(), f.name); return; }
+    if(ext==='dxf'){ const b=await f.arrayBuffer(); let t; try{ t=new TextDecoder('utf-8',{fatal:true}).decode(b); }catch(_){ t=new TextDecoder('windows-1252').decode(b); }
+      if(t.startsWith('AutoCAD Binary DXF')){ $('msgArq').innerHTML='<div class="aviso">DXF binário não é suportado. Salve o DXF como texto (ASCII).</div>'; return; }
+      lerDXF(t, f.name); return; }
+    const t=await f.text();
+    if(/<kml[\s>]/i.test(t.slice(0,3000))){ lerKML(t, f.name); return; }
+    if(/^\s*0\s*\r?\nSECTION/.test(t)){ lerDXF(t, f.name); return; }
+    aplicarLeitura(t, f.name);
+  }catch(err){ $('msgArq').innerHTML=`<div class="aviso">Erro ao ler ${f.name}: ${err.message}</div>`; }
+});
 $('btnColar').onclick=()=>{ $('boxColar').style.display=$('boxColar').style.display==='none'?'block':'none'; $('boxManual').style.display='none'; };
 $('btnManual').onclick=()=>{ $('boxManual').style.display=$('boxManual').style.display==='none'?'block':'none'; $('boxColar').style.display='none'; };
 $('btnLerColado').onclick=()=>aplicarLeitura($('txtColar').value,'texto colado');
